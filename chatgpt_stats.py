@@ -2893,6 +2893,233 @@ def _build_embed_cache(convos, folder="default"):
     return result
 
 
+# ── best ideas screen ─────────────────────────────────────────────────────────
+def screen_best_ideas(stats, convos):
+    """
+    Surface the top 3 ideas from the user's entire ChatGPT history using a
+    composite signal score — not just most-discussed, but most distinctively
+    theirs: recurring, long-lived, deep, and far from generic task usage.
+
+    Scoring (0–1 normalized, weighted):
+      recurrence  0.30  — how many times you returned to it
+      longevity   0.25  — how many months it has spanned
+      user_ratio  0.20  — how much YOU talked vs GPT (you did the thinking)
+      uniqueness  0.15  — distance from global "average ChatGPT usage" centroid
+      depth       0.10  — deepest single conversation in the cluster (msg count)
+    """
+    header("✦  BEST IDEAS")
+    console.print("  [dim]Not your most-discussed topics.\n"
+                  "  The ones that reveal something about how you think.[/]\n")
+
+    cfg    = load_config()
+    folder = cfg.get("folder", "default")
+    cache  = _build_embed_cache(convos, folder)
+
+    if cache is None:
+        console.print(Panel(
+            "  fastembed is required for Best Ideas.\n"
+            "  Run: [bold]pip install fastembed[/]",
+            border_style="yellow",
+        ))
+        pause()
+        return
+
+    try:
+        import numpy as np
+    except ImportError:
+        console.print("[red]numpy not available.[/]")
+        pause()
+        return
+
+    ids        = cache["ids"]
+    titles     = cache["titles"]
+    texts      = cache["texts"]
+    ts_list    = cache["ts"]
+    embeddings = cache["embeddings"]
+    n          = len(ids)
+
+    THRESHOLD = 0.74
+    MIN_SIZE  = 2   # slightly looser than Ideas — a 2-convo thread can be a great idea
+
+    # ── Cluster (same union-find as Ideas) ────────────────────────────────────
+    parent = list(range(n))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x, y):
+        parent[find(x)] = find(y)
+
+    sim  = embeddings @ embeddings.T
+    rows, cols = np.where(np.triu(sim, k=1) >= THRESHOLD)
+    for i, j in zip(rows.tolist(), cols.tolist()):
+        union(i, j)
+
+    groups = defaultdict(list)
+    for i in range(n):
+        groups[find(i)].append(i)
+
+    clusters = [idxs for idxs in groups.values() if len(idxs) >= MIN_SIZE]
+
+    if not clusters:
+        console.print(
+            "  [dim]Not enough recurring threads found yet.\n"
+            "  Keep using ChatGPT as a thinking partner — this screen gets better over time.[/]"
+        )
+        pause()
+        return
+
+    # ── Global centroid (represents "average ChatGPT usage") ─────────────────
+    # Ideas far from this centroid are distinctively yours, not generic tasks.
+    global_centroid = embeddings.mean(axis=0)
+    norm = float(np.linalg.norm(global_centroid))
+    if norm > 0:
+        global_centroid = global_centroid / norm
+
+    # ── Build convo lookup for user_words / msgs by cid ──────────────────────
+    convo_lookup = stats.get("convos", {})
+
+    # ── Score each cluster ────────────────────────────────────────────────────
+    now_ts = datetime.now(tz=timezone.utc).timestamp()
+
+    scored = []
+    for idxs in clusters:
+        ts_vals = [ts_list[i] for i in idxs if ts_list[i]]
+
+        # Recurrence (0–1, capped at 15)
+        recurrence = min(len(idxs) / 15.0, 1.0)
+
+        # Longevity — months spanned (0–1, capped at 24 months)
+        if len(ts_vals) >= 2:
+            span_days = (max(ts_vals) - min(ts_vals)) / 86400
+        else:
+            span_days = 0.0
+        longevity = min(span_days / 730.0, 1.0)  # 730 days = 24 months
+
+        # User word ratio — how much YOU talked in these convos
+        ratios = []
+        max_msgs = 0
+        for i in idxs:
+            cid  = ids[i]
+            cdata = convo_lookup.get(cid, {})
+            uw   = cdata.get("user_words", 0) or 0
+            gw   = cdata.get("gpt_words", 0) or 0
+            msgs = cdata.get("msgs", 0) or 0
+            total = uw + gw
+            if total > 0:
+                ratios.append(uw / total)
+            if msgs > max_msgs:
+                max_msgs = msgs
+        user_ratio = float(np.mean(ratios)) if ratios else 0.5
+
+        # Uniqueness — cluster centroid distance from global "generic" centroid
+        cluster_embs    = embeddings[idxs]
+        cluster_centroid = cluster_embs.mean(axis=0)
+        cn = float(np.linalg.norm(cluster_centroid))
+        if cn > 0:
+            cluster_centroid = cluster_centroid / cn
+        similarity_to_global = float(cluster_centroid @ global_centroid)
+        uniqueness = max(0.0, 1.0 - similarity_to_global)
+
+        # Depth — deepest single convo, capped at 60 msgs
+        depth = min(max_msgs / 60.0, 1.0)
+
+        score = (
+            recurrence * 0.30
+            + longevity  * 0.25
+            + user_ratio * 0.20
+            + uniqueness * 0.15
+            + depth      * 0.10
+        )
+
+        scored.append((score, idxs, span_days))
+
+    scored.sort(key=lambda x: -x[0])
+    top3 = scored[:3]
+
+    # ── Cluster naming (same logic as Ideas) ─────────────────────────────────
+    NAME_STOPS = STOP_WORDS | {
+        "new","using","help","create","build","make","add","get","set",
+        "update","fix","question","issue","problem","work","working","test",
+        "need","vs","via","how","way","best","think","just","let","want",
+    }
+
+    def cluster_name(idxs):
+        wf = Counter()
+        for i in idxs:
+            words = re.findall(r"\b[a-z]{3,}\b", titles[i].lower())
+            wf.update(w for w in words if w not in NAME_STOPS)
+        top = [w for w, _ in wf.most_common(3)]
+        return " / ".join(w.capitalize() for w in top[:2]) if top else "Unnamed Thread"
+
+    def best_snippet(idxs):
+        """Return the opening thought from the deepest convo in the cluster."""
+        cdata_list = [(convo_lookup.get(ids[i], {}).get("user_words", 0) or 0, i)
+                      for i in idxs]
+        _, best_i = max(cdata_list, default=(0, idxs[0]))
+        # texts[i] = "Title. first_user_text" — strip the title prefix
+        raw = texts[best_i]
+        title_prefix = titles[best_i] + ". "
+        if raw.startswith(title_prefix):
+            raw = raw[len(title_prefix):]
+        snippet = raw.strip()
+        if not snippet:
+            snippet = titles[best_i]
+        # Truncate cleanly at word boundary
+        if len(snippet) > 120:
+            snippet = snippet[:117].rsplit(" ", 1)[0] + "…"
+        return snippet
+
+    # ── Render ────────────────────────────────────────────────────────────────
+    MEDALS = ["1", "2", "3"]
+
+    for rank, (score, idxs, span_days) in enumerate(top3):
+        name    = cluster_name(idxs)
+        snippet = best_snippet(idxs)
+        count   = len(idxs)
+
+        ts_vals = sorted(t for i in idxs if (t := ts_list[i]))
+        if ts_vals and span_days >= 30:
+            span_str = (
+                f"{span_days/365:.1f} yr" if span_days >= 365
+                else f"{span_days/30:.0f} mo"
+            )
+            span_part = f" · {span_str}"
+        else:
+            span_part = ""
+
+        # Recency indicator
+        if ts_vals:
+            days_since = (now_ts - max(ts_vals)) / 86400
+            if days_since < 30:
+                recency = "  [green]● active[/]"
+            elif days_since < 120:
+                recency = "  [yellow]● recent[/]"
+            else:
+                recency = "  [dim]● dormant[/]"
+        else:
+            recency = ""
+
+        console.print(
+            f"  [bold]{MEDALS[rank]}.[/]  [bold]{name}[/]{recency}"
+        )
+        console.print(
+            f"      [dim]{count} conversations{span_part}[/]"
+        )
+        if snippet:
+            console.print(f'      [italic dim]"{snippet}"[/]')
+        console.print()
+
+    console.print(
+        "  [dim]Score: recurrence + longevity + your thinking ratio\n"
+        "  + how unlike generic ChatGPT use this is + depth[/]"
+    )
+    pause()
+
+
 # ── ideas screen ──────────────────────────────────────────────────────────────
 def screen_ideas(stats, convos):
     header("💡  IDEAS")
@@ -3328,6 +3555,7 @@ def main():
     # ── Main menu (6 items + housekeeping) ────────────────────────────────────
     MAIN_MENU = [
         ("📖  Your Story", "What you've been thinking about lately.", "story"),
+        ("✦   Best Ideas", "Your top 3 ideas, ranked by signal.",    "best_ideas"),
         ("💡  Ideas",      "The things that keep coming back.",      "ideas"),
         ("🔍  Search",     "Find anything you've already thought about.", "search"),
         ("📊  Patterns",   "How you work — and where it costs you.", "patterns"),
@@ -3423,6 +3651,8 @@ def main():
                 _EMBED_CACHE.clear()
         elif not stats and action not in ("settings", "about", "folder", "quit"):
             console.print("[yellow]  Load a folder first.[/]")
+        elif action == "best_ideas":
+            screen_best_ideas(stats, convos)
         elif action == "ideas":
             screen_ideas(stats, convos)
         elif action == "search":
