@@ -3049,7 +3049,7 @@ def screen_best_ideas(stats, convos):
         for k in range(1, len(sorted_ts)):
             if (sorted_ts[k] - sorted_ts[k - 1]) / 86400 >= GAP_DAYS:
                 returns += 1
-        return_score = min((returns - 1) / 5.0, 1.0)  # 0 = one burst; 1.0 = 6+ returns
+        return_score = min((returns - 1) / 5.0, 1.0)  # 0 = single session; 1.0 = 6+ distinct returns
 
         score = (
             return_score * 0.30   # the headline signal: kept coming back after silence
@@ -3081,7 +3081,7 @@ def screen_best_ideas(stats, convos):
         return " / ".join(w.capitalize() for w in top[:2]) if top else "Unnamed Thread"
 
     def best_snippet(idxs):
-        """Return the opening thought from the deepest convo in the cluster."""
+        """Return the opening thought from the most word-dense convo in the cluster."""
         cdata_list = [(convo_lookup.get(ids[i], {}).get("user_words", 0) or 0, i)
                       for i in idxs]
         _, best_i = max(cdata_list, default=(0, idxs[0]))
@@ -3142,8 +3142,8 @@ def screen_best_ideas(stats, convos):
         console.print()
 
     console.print(
-        "  [dim]Score: recurrence + longevity + your thinking ratio\n"
-        "  + how unlike generic ChatGPT use this is + depth[/]"
+        "  [dim]Score: how often you returned after a gap + your thinking ratio\n"
+        "  + how unlike generic ChatGPT use this is + longevity + depth[/]"
     )
     pause()
 
