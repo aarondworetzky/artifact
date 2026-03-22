@@ -2901,11 +2901,15 @@ def screen_best_ideas(stats, convos):
     theirs: recurring, long-lived, deep, and far from generic task usage.
 
     Scoring (0–1 normalized, weighted):
-      recurrence  0.30  — how many times you returned to it
-      longevity   0.25  — how many months it has spanned
+      returns     0.30  — distinct sessions 30+ days apart (the "quietly carrying" signal)
       user_ratio  0.20  — how much YOU talked vs GPT (you did the thinking)
-      uniqueness  0.15  — distance from global "average ChatGPT usage" centroid
-      depth       0.10  — deepest single conversation in the cluster (msg count)
+      uniqueness  0.20  — distance from global "average ChatGPT usage" centroid
+      longevity   0.15  — how long you've had this thread
+      recurrence  0.10  — raw conversation count
+      depth       0.05  — deepest single conversation in the cluster (msg count)
+
+    Filters: clusters > 30 convos (topics, not ideas) and avg depth < 5 msgs
+    (lookup queries, not thinking) are excluded before scoring.
     """
     header("✦  BEST IDEAS")
     console.print("  [dim]Not your most-discussed topics.\n"
@@ -2938,8 +2942,10 @@ def screen_best_ideas(stats, convos):
     embeddings = cache["embeddings"]
     n          = len(ids)
 
-    THRESHOLD = 0.74
-    MIN_SIZE  = 2   # slightly looser than Ideas — a 2-convo thread can be a great idea
+    THRESHOLD   = 0.80   # tighter than Ideas (0.74) — specific threads, not topic buckets
+    MIN_SIZE    = 2      # a 2-convo thread can be a genuine idea
+    MAX_CLUSTER = 30     # clusters larger than this are categories, not ideas — skip them
+    MIN_AVG_MSGS = 5     # filter out lookup-style clusters (short Q&A, not real thinking)
 
     # ── Cluster (same union-find as Ideas) ────────────────────────────────────
     parent = list(range(n))
@@ -2962,7 +2968,17 @@ def screen_best_ideas(stats, convos):
     for i in range(n):
         groups[find(i)].append(i)
 
-    clusters = [idxs for idxs in groups.values() if len(idxs) >= MIN_SIZE]
+    convo_lookup = stats.get("convos", {})
+
+    clusters = []
+    for idxs in groups.values():
+        if len(idxs) < MIN_SIZE or len(idxs) > MAX_CLUSTER:
+            continue
+        # Filter: skip shallow clusters (lookup queries, not ideas)
+        msgs_list = [convo_lookup.get(ids[i], {}).get("msgs", 0) or 0 for i in idxs]
+        if msgs_list and (sum(msgs_list) / len(msgs_list)) < MIN_AVG_MSGS:
+            continue
+        clusters.append(idxs)
 
     if not clusters:
         console.print(
@@ -2979,9 +2995,6 @@ def screen_best_ideas(stats, convos):
     if norm > 0:
         global_centroid = global_centroid / norm
 
-    # ── Build convo lookup for user_words / msgs by cid ──────────────────────
-    convo_lookup = stats.get("convos", {})
-
     # ── Score each cluster ────────────────────────────────────────────────────
     now_ts = datetime.now(tz=timezone.utc).timestamp()
 
@@ -2989,8 +3002,8 @@ def screen_best_ideas(stats, convos):
     for idxs in clusters:
         ts_vals = [ts_list[i] for i in idxs if ts_list[i]]
 
-        # Recurrence (0–1, capped at 15)
-        recurrence = min(len(idxs) / 15.0, 1.0)
+        # Recurrence (0–1, capped at 10 — we already filtered giant clusters)
+        recurrence = min(len(idxs) / 10.0, 1.0)
 
         # Longevity — months spanned (0–1, capped at 24 months)
         if len(ts_vals) >= 2:
@@ -3027,15 +3040,27 @@ def screen_best_ideas(stats, convos):
         # Depth — deepest single convo, capped at 60 msgs
         depth = min(max_msgs / 60.0, 1.0)
 
+        # Returns — distinct sessions separated by 30+ day gaps
+        # This is the "quietly carrying" signal: you went away and came back.
+        # A sprint of 8 convos in January ≠ returning to something 4 times over 2 years.
+        GAP_DAYS = 30
+        sorted_ts = sorted(ts_vals)
+        returns = 1
+        for k in range(1, len(sorted_ts)):
+            if (sorted_ts[k] - sorted_ts[k - 1]) / 86400 >= GAP_DAYS:
+                returns += 1
+        return_score = min((returns - 1) / 5.0, 1.0)  # 0 = one burst; 1.0 = 6+ returns
+
         score = (
-            recurrence * 0.30
-            + longevity  * 0.25
-            + user_ratio * 0.20
-            + uniqueness * 0.15
-            + depth      * 0.10
+            return_score * 0.30   # the headline signal: kept coming back after silence
+            + user_ratio * 0.20   # you did the thinking, not just prompted
+            + uniqueness * 0.20   # distinctively yours, not generic task usage
+            + longevity  * 0.15   # how long you've had this thread
+            + recurrence * 0.10   # raw count, less important now that returns captures it
+            + depth      * 0.05   # deepest single convo
         )
 
-        scored.append((score, idxs, span_days))
+        scored.append((score, idxs, span_days, returns))
 
     scored.sort(key=lambda x: -x[0])
     top3 = scored[:3]
@@ -3076,7 +3101,7 @@ def screen_best_ideas(stats, convos):
     # ── Render ────────────────────────────────────────────────────────────────
     MEDALS = ["1", "2", "3"]
 
-    for rank, (score, idxs, span_days) in enumerate(top3):
+    for rank, (score, idxs, span_days, returns) in enumerate(top3):
         name    = cluster_name(idxs)
         snippet = best_snippet(idxs)
         count   = len(idxs)
@@ -3103,11 +3128,14 @@ def screen_best_ideas(stats, convos):
         else:
             recency = ""
 
+        returns_str = (
+            f" · returned {returns}×" if returns >= 2 else ""
+        )
         console.print(
             f"  [bold]{MEDALS[rank]}.[/]  [bold]{name}[/]{recency}"
         )
         console.print(
-            f"      [dim]{count} conversations{span_part}[/]"
+            f"      [dim]{count} conversations{span_part}{returns_str}[/]"
         )
         if snippet:
             console.print(f'      [italic dim]"{snippet}"[/]')
