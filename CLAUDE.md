@@ -24,6 +24,7 @@ artifact. turns your graveyard into a library.
 - Data parsing + stats engine (`build_stats`)
 - First-run welcome screen (artifact. ethos, shown once)
 - Signal Score — data quality rating 0–100 across 5 signals
+- Best Ideas screen — top 3 personally significant idea threads via composite scoring (returns, user_ratio, uniqueness, longevity, depth)
 - Ideas screen — semantic clustering of recurring thoughts (fastembed)
 - Search screen — semantic search with cosine similarity scoring
 - Patterns sub-menu — 11 deep-dive metric screens

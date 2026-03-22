@@ -5,17 +5,11 @@ All notable changes to artifact. are documented here.
 ## [0.1.0.0] - 2026-03-22
 
 ### Added
-- `screen_best_ideas()` — surfaces your top 3 most personally significant idea threads using composite signal scoring
-- Return count signal: detects how many distinct sessions (30+ day gaps) you've returned to a thread — the "quietly carrying" indicator
-- Cluster size cap (`MAX_CLUSTER=30`): filters topic buckets, keeping only specific idea threads
-- Average depth filter (`MIN_AVG_MSGS=5`): excludes lookup-style clusters (short Q&A, not real thinking)
+- **Best Ideas** now detects how many times you've returned to a thread after a 30+ day gap — the "quietly carrying" signal. A thread you've come back to 4 times over 2 years ranks higher than 8 conversations in a single sprint.
+- Results now show "returned N×" so you can see at a glance which threads you keep coming back to.
 
 ### Changed
-- Best Ideas similarity threshold raised from 0.74 → 0.80 for tighter, more specific clusters
-- Scoring weights rebalanced: returns (0.30) leads, followed by user_ratio (0.20), uniqueness (0.20), longevity (0.15), recurrence (0.10), depth (0.05)
-- Recurrence normalization cap lowered from 15 → 10 (large clusters already filtered)
-- Result metadata now shows "returned N×" when a thread has multiple distinct sessions
-
-### Fixed
-- Score footer text updated to reflect new return-based scoring formula
-- `best_snippet` docstring corrected to match actual sort key (user word density, not message count)
+- **Best Ideas** clusters are now tighter (0.80 similarity vs 0.74) — you get specific idea threads, not broad topic categories.
+- Clusters with 30+ conversations are excluded: those are domains, not ideas.
+- Clusters where the average conversation is fewer than 5 messages are excluded: lookup questions, not thinking.
+- Scoring now leads with returns (how often you came back) rather than raw conversation count.

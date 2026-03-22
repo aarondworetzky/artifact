@@ -12,6 +12,7 @@ artifact. turns your graveyard into a library.
 artifact. reads your ChatGPT export and gives your history back to you in plain English.
 
 - **Your Story** — what you've been thinking about lately, and a random insight from your past worth revisiting
+- **Best Ideas** — your top 3 most personally significant idea threads, ranked by how often you've returned to them and how distinctively yours they are
 - **Ideas** — semantic clustering of recurring thoughts across all your conversations
 - **Search** — find anything you've already worked through, ranked by similarity
 - **Patterns** — 11 deep-dive screens: word frequency, time-of-day, model usage, conversation depth, and more
