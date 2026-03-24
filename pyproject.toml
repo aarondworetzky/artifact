@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "artifact"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "rich>=13.0",
+    "questionary>=2.0",
+    "fastembed>=0.3",
+]
+
+[project.scripts]
+artifact = "chatgpt_stats:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
